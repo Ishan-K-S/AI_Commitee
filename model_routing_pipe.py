@@ -26,6 +26,15 @@ class Pipe:
             description="Model used to classify user intent",
         )
 
+        # added: timeout values
+        CONNECT_TIMEOUT: float = Field(
+            default=20.0, description='Max seconds to establish connection'
+        )
+
+        READ_TIMEOUT: float = Field(
+            default=20.0, description='Max seconds to wait for data'
+        )
+
     def __init__(self):
         self.id = "math_mcq_router"
         self.name = "Math MCQ Router"
@@ -61,6 +70,7 @@ Reply with ONLY one word: mcq or thinking"""
                 "max_tokens": 5,
                 "temperature": 0,
             },
+            timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # added: timeout
         )
 
         if response.status_code != 200:
@@ -140,10 +150,11 @@ Your role:
                     "model": model,
                     "messages": payload_messages,
                     "stream": True,
-                    "temperature": 1,
+                    "temperature": 0.2, # changed: temp value
                     "max_tokens": 1024,
                 },
                 stream=True,
+                timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # added: timeout
             )
 
             if response.status_code != 200:
