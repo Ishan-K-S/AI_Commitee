@@ -26,6 +26,11 @@ class Pipe:
             description="Model used to classify user intent",
         )
 
+        DEFAULT_MODEL: str = Field(
+            default="llama-3.1-8b-instant",
+            description="Model used for casual conversation",
+        )
+
     def __init__(self):
         self.id = "math_mcq_router"
         self.name = "Math MCQ Router"
@@ -44,10 +49,12 @@ Here is the recent conversation:
 {formatted}
 
 Classify the LAST user message into exactly one category:
-- "mcq" → the user wants a new practice problem
-- "thinking" → the user is answering, checking, or asking for explanation
+- "mcq" → the user wants a new practice problem or question
+- "thinking" → the user is answering a question, checking their answer, or asking for an explanation or solution
+- "default" → anything else, including greetings, acknowledgements, casual conversation, or anything ambiguous (e.g. "hello", "ok", "I understand", "thanks", "continue")
 
-Reply with ONLY one word: mcq or thinking"""
+When in doubt, classify as "default".
+Reply with ONLY one word: mcq, thinking, or default"""
 
         response = requests.post(
             f"{self.valves.GROQ_BASE_URL}/chat/completions",
@@ -69,7 +76,13 @@ Reply with ONLY one word: mcq or thinking"""
             )
 
         result = response.json()["choices"][0]["message"]["content"].strip().lower()
-        return "mcq" if "mcq" in result else "thinking"
+
+        if "mcq" in result:
+            return "mcq"
+        elif "thinking" in result:
+            return "thinking"
+        else:
+            return "default"
 
     def pipe(self, body: dict) -> Iterator[str]:
         messages = body.get("messages", [])
@@ -114,7 +127,10 @@ Rules:
 - Do NOT reveal the answer
 - End with: "Take your time and choose your answer!"
 """
-        else:
+            payload_messages = [{"role": "system", "content": system_prompt}]
+            payload_messages.extend(user_messages)
+
+        elif intent == "thinking":
             model = self.valves.THINKING_MODEL
             system_prompt = """You are a math tutor helping with multiple choice questions.
 
@@ -123,11 +139,30 @@ Your role:
 - If they asked for the answer, reveal it and explain why
 - If they asked for explanation, show all working clearly
 - Be encouraging and patient
+- At the end, ask them if they understand after your response.
 """
+            payload_messages = [{"role": "system", "content": system_prompt}]
+            payload_messages.extend(user_messages)
 
-        payload_messages = []
-        payload_messages.append({"role": "system", "content": system_prompt})
-        payload_messages.extend(user_messages)
+        else:  # "default"
+            model = self.valves.DEFAULT_MODEL
+            system_prompt = """First, determine which of the following situations applies to the user's message:
+
+1. If the message is casual conversation or an acknowledgement (e.g. "ok", "thanks", "I understand"):
+   - Respond naturally and briefly
+   - End by asking if they want a new problem or have any math questions
+
+2. If the message is off-topic and unrelated to math or studying:
+   - Politely let them know you can only help with math
+   - Redirect them toward requesting a practice problem or asking a math question
+
+3. If the message is unclear or ambiguous and you genuinely cannot determine what the user means:
+   - Ask for clarification
+   - Do NOT also ask if they want a new problem at the end
+
+Always be friendly and encouraging."""
+            payload_messages = [{"role": "system", "content": system_prompt}]
+            payload_messages.extend(user_messages[-6:])
 
         try:
             response = requests.post(
