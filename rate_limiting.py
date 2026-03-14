@@ -28,15 +28,19 @@ class Filter:
         self._lock = threading.Lock()
 
     def _prune(self, user_id: str, now: float):
-        """Remove timestamps older than 1 week"""
-        timestamps = self._rate_log.get(user_id, [])
+        """Remove timestamps older than 1 week. Must be called with self._lock held."""
+        timestamps = self._rate_log.get(user_id)
 
         if not timestamps:
             return
 
-        self._rate_log[user_id] = [
-            t for t in timestamps if now - t < 60 * 60 * 24 * 7
-        ]
+        cleaned = [t for t in timestamps if now - t < 60 * 60 * 24 * 7]
+
+        # cleaned up empty keys to prevent too much memory be used
+        if cleaned:
+            self._rate_log[user_id] = cleaned
+        else:
+            del self._rate_log[user_id]
 
     def _check_limit(self, user_id: str) -> Optional[str]:
         now = time.time()
@@ -66,9 +70,14 @@ class Filter:
         """
         Runs before the pipe executes.
         """
+        user_info = __user__ or {}
+        user_id = user_info.get("id")
 
-        user_id = (__user__ or {}).get("id") or "anonymous"
+        # instead of calling all anonymous users "anonymous", try to find something unique about them like session id or ip
+        if not user_id:
+            user_id = user_info.get("session_id") or user_info.get("ip") or "anonymous"
 
+        # make sure lock checks entire sequence
         with self._lock:
             err = self._check_limit(user_id)
 

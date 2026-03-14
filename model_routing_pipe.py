@@ -17,8 +17,12 @@ class Pipe:
         )
 
         THINKING_MODEL: str = Field(
-            default="openai/gpt-oss-120b",
-            description="Model used for reasoning and explanations",
+            default="llama-3.3-70b-versatile",
+            # tried to use openai/gpt-oss-120b, but Groq doesn't support it i think
+            # I could be wrong though 
+            # I used llama cuz i searched up something that groq does support
+            # default= "openai/gpt-oss-120b",
+            description="Model used for reasoning and explanations (must be available on GROQ_BASE_URL)",
         )
 
         JUDGE_MODEL: str = Field(
@@ -31,12 +35,32 @@ class Pipe:
         self.name = "Math MCQ Router"
         self.valves = self.Valves()
 
+    @staticmethod
+    def _extract_text_content(content) -> str:
+        """
+        FIX: message content can be a string OR a list of content parts
+        (e.g. vision messages). Safely extract plain text in both cases.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    parts.append(part.get("text", ""))
+            return " ".join(parts)
+        return ""
+
     def classify_intent(self, messages: list) -> str:
         if not self.valves.GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY is not set")
 
         recent = messages[-4:]
-        formatted = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in recent])
+
+        # run a message through a helper to use only the text parts
+        formatted = "\n".join(
+            [f"{m['role'].upper()}: {self._extract_text_content(m.get('content', ''))}" for m in recent]
+        )
 
         judge_prompt = f"""You are an intent classifier.
 
@@ -69,7 +93,9 @@ Reply with ONLY one word: mcq or thinking"""
             )
 
         result = response.json()["choices"][0]["message"]["content"].strip().lower()
-        return "mcq" if "mcq" in result else "thinking"
+
+        # use exact word match instead of substring
+        return "mcq" if result == "mcq" else "thinking"
 
     def pipe(self, body: dict) -> Iterator[str]:
         messages = body.get("messages", [])
@@ -82,8 +108,14 @@ Reply with ONLY one word: mcq or thinking"""
             yield "ERROR: GROQ_API_KEY is not configured. Please set your API key in valves."
             return
 
-        user_messages = [m for m in messages if m["role"] != "system"]
-        user_messages = [m for m in user_messages if m.get("content", "").strip()]
+        user_messages = [m for m in messages if m.get("role") != "system"]
+
+        # Extract all text available from each message
+        # This prevents images from being dropped
+        user_messages = [
+            m for m in user_messages
+            if self._extract_text_content(m.get("content", "")).strip()
+        ]
 
         if not user_messages:
             yield "ERROR: No valid user messages found."
@@ -125,8 +157,7 @@ Your role:
 - Be encouraging and patient
 """
 
-        payload_messages = []
-        payload_messages.append({"role": "system", "content": system_prompt})
+        payload_messages = [{"role": "system", "content": system_prompt}]
         payload_messages.extend(user_messages)
 
         try:
@@ -163,7 +194,9 @@ Your role:
                         try:
                             chunk = json.loads(data)
                             choices = chunk.get("choices", [])
-                            if choices and len(choices) > 0:
+
+                            # check that the chunk actually has something in it
+                            if choices:
                                 delta = choices[0].get("delta", {}).get("content", "")
                                 if delta:
                                     yield delta
