@@ -26,7 +26,7 @@ class Pipe:
             description="Model used to classify user intent",
         )
 
-        # added: timeout values
+        # timeout values for connection + data
         CONNECT_TIMEOUT: float = Field(
             default=20.0, description='Max seconds to establish connection'
         )
@@ -40,7 +40,7 @@ class Pipe:
         self.name = "Math MCQ Router"
         self.valves = self.Valves()
 
-    # added: convert message content into text
+    # convert message content into text
     def _content_to_text(self, content: Any) -> str:
         """
         Convert OpenWebUI-style message content into plain text that is safe for filtering and intent classification.
@@ -122,7 +122,6 @@ class Pipe:
 
         recent = messages[-4:]
 
-        # added: new formatting
         formatted_lines = []
 
         for m in recent:
@@ -178,7 +177,7 @@ Reply with ONLY one word: mcq or thinking"""
             yield "ERROR: GROQ_API_KEY is not configured. Please set your API key in valves."
             return
         
-        # added: normalize messages
+        # normalize messages
         normalized_messages = []
         for message in messages:
             normalized = self._normalize_message(message)
@@ -248,11 +247,11 @@ Your role:
                     "model": model,
                     "messages": payload_messages,
                     "stream": True,
-                    "temperature": 0.2, # changed: temp value
+                    "temperature": 0.2,
                     "max_tokens": 1024,
                 },
                 stream=True,
-                timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # added: timeout
+                timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # timeout
             )
 
             if response.status_code != 200:
