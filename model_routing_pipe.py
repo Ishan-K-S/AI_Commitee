@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Iterator, Any # added: Any
+from typing import Optional, Iterator
 import requests
 import json
 
@@ -26,110 +26,17 @@ class Pipe:
             description="Model used to classify user intent",
         )
 
-        # timeout values for connection + data
-        CONNECT_TIMEOUT: float = Field(
-            default=20.0, description='Max seconds to establish connection'
-        )
-
-        READ_TIMEOUT: float = Field(
-            default=20.0, description='Max seconds to wait for data'
-        )
-
     def __init__(self):
         self.id = "math_mcq_router"
         self.name = "Math MCQ Router"
         self.valves = self.Valves()
-
-    # convert message content into text
-    def _content_to_text(self, content: Any) -> str:
-        """
-        Convert OpenWebUI-style message content into plain text that is safe for filtering and intent classification.
-        """
-        if content is None:
-            return ""
-
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            parts = []
-
-            for part in content:
-                if isinstance(part, str):
-                    if part.strip():
-                        parts.append(part)
-                    continue
-
-                if not isinstance(part, dict):
-                    # not a string or dict -> invalid
-                    continue
-
-                part_type = part.get("type")
-
-                if part_type in {"text", "input_text", "output_text"}:
-                    text = part.get("text", "")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-
-                elif part_type in {"image_url", "input_image"}:
-                    parts.append("[image]") # placeholder
-                    # TODO: add vision capability
-
-                elif isinstance(part.get("text"), str) and part["text"].strip():
-                    parts.append(part["text"])
-
-            return "\n".join(parts)
-
-        if isinstance(content, dict):
-            if isinstance(content.get("text"), str):
-                return content["text"]
-
-            nested = content.get("content")
-            if nested is not None:
-                return self._content_to_text(nested)
-
-            return ""
-
-        return str(content)
-    
-    def _normalize_message(self, message: Any) -> Optional[dict]:
-        """
-        Return a safe message dict or None if the item is unusable.
-        Adds a plain-text view under 'text_content' for router logic.
-        """
-        if not isinstance(message, dict):
-            return None
-
-        normalized = dict(message)
-
-        role = normalized.get("role", "user") # if no role, defaults to user
-        if not isinstance(role, str) or not role.strip():
-            role = "user"
-
-        if role not in {"system", "user", "assistant", "tool"}:
-            role = "user"
-
-        normalized["role"] = role
-        normalized["text_content"] = self._content_to_text(
-            normalized.get("content")
-        ).strip()
-
-        return normalized
 
     def classify_intent(self, messages: list) -> str:
         if not self.valves.GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY is not set")
 
         recent = messages[-4:]
-
-        formatted_lines = []
-
-        for m in recent:
-            role = m.get("role", "user").upper()
-            text = m.get("text_content", "")
-            formatted_lines.append(f"{role}: {text}")
-
-        formatted = "\n".join(formatted_lines)
+        formatted = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in recent])
 
         judge_prompt = f"""You are an intent classifier.
 
@@ -154,7 +61,6 @@ Reply with ONLY one word: mcq or thinking"""
                 "max_tokens": 5,
                 "temperature": 0,
             },
-            timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # added: timeout
         )
 
         if response.status_code != 200:
@@ -163,30 +69,21 @@ Reply with ONLY one word: mcq or thinking"""
             )
 
         result = response.json()["choices"][0]["message"]["content"].strip().lower()
-        return "mcq" if result == "mcq" else "thinking" # changed: check for exact match rather than a substring
+        return "mcq" if "mcq" in result else "thinking"
 
     def pipe(self, body: dict) -> Iterator[str]:
         messages = body.get("messages", [])
 
-        # changed: check for if messages exists
-        if not isinstance(messages, list) or not messages:
+        if not messages:
             yield "No messages received."
             return
 
         if not self.valves.GROQ_API_KEY:
             yield "ERROR: GROQ_API_KEY is not configured. Please set your API key in valves."
             return
-        
-        # normalize messages
-        normalized_messages = []
-        for message in messages:
-            normalized = self._normalize_message(message)
-            if normalized is not None:
-                normalized_messages.append(normalized)
 
-        # note: technically not user messages anymore, just non-system messages
-        user_messages = [m for m in normalized_messages if m.get("role") != "system"]
-        user_messages = [m for m in user_messages if m.get("text_content")]
+        user_messages = [m for m in messages if m["role"] != "system"]
+        user_messages = [m for m in user_messages if m.get("content", "").strip()]
 
         if not user_messages:
             yield "ERROR: No valid user messages found."
@@ -230,11 +127,7 @@ Your role:
 
         payload_messages = []
         payload_messages.append({"role": "system", "content": system_prompt})
-
-        # changed: payload building
-        for msg in user_messages:
-            clean_msg = {k: v for k, v in msg.items() if k != "text_content"} # remove helper plaintext version
-            payload_messages.append(clean_msg)
+        payload_messages.extend(user_messages)
 
         try:
             response = requests.post(
@@ -247,11 +140,10 @@ Your role:
                     "model": model,
                     "messages": payload_messages,
                     "stream": True,
-                    "temperature": 0.2,
+                    "temperature": 1,
                     "max_tokens": 1024,
                 },
                 stream=True,
-                timeout=(self.valves.CONNECT_TIMEOUT, self.valves.READ_TIMEOUT), # timeout
             )
 
             if response.status_code != 200:
