@@ -1,9 +1,10 @@
-from open_webui.utils.middleware import chat_code_interpreter_handler
 from pydantic import BaseModel
 from openai import OpenAI
 import aiohttp
 import asyncio
 import json
+import tempfile
+import os
 
 
 BASE_URL = "https://openrouter.ai/api"
@@ -33,26 +34,40 @@ class Filter:
         self.session = aiohttp.ClientSession()
 
     async def close(self):
-        """Cleanup session when shutting down."""
         await self.session.close()
 
     async def python_interpreter(self, code: str):
         try:
-            payload = {"code": code}
-            result = await chat_code_interpreter_handler(payload)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as tmp:
+                tmp.write(code.encode())
+                tmp_path = tmp.name
 
-            if isinstance(result, dict):
-                stdout = result.get("stdout", "")
-                stderr = result.get("stderr", "")
-                output = result.get("output", "")
+            process = await asyncio.create_subprocess_exec(
+                "python",
+                tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
 
-                combined = "\n".join(
-                    part for part in [stdout, output, stderr] if part
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=10  # prevent infinite loops
                 )
+            except asyncio.TimeoutError:
+                process.kill()
+                return "Execution timed out."
 
-                return combined or "Code executed successfully with no output."
+            finally:
+                os.remove(tmp_path)
 
-            return str(result)
+            output = stdout.decode().strip()
+            error = stderr.decode().strip()
+
+            if error:
+                return f"Error:\n{error}"
+
+            return output or "Code executed successfully with no output."
 
         except Exception as e:
             return f"Python interpreter error: {str(e)}"
