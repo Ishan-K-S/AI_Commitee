@@ -118,16 +118,49 @@ class Filter:
         lowered = text.lower()
         return any(p.search(lowered) for p in self._suspicious_patterns)
 
+    # truncate only at explicit boundaries instead of arbitrary character cuts
+    def _truncate_at_boundary(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+
+        window = text[: max_chars + 1]
+        cut = -1
+
+        for pattern in (r"\n\n", r"\n", r"(?<=[.!?])\s", r"\s"):
+            matches = list(re.finditer(pattern, window))
+            if matches:
+                cut = matches[-1].start()
+                break
+
+        if cut <= 0:
+            cut = max_chars  # Fallback for unbroken text
+
+        return text[:cut].rstrip() + "\n\n[truncated]"
+    
     def _sanitize_text(self, text: str) -> str:
         text = self._normalize_whitespace(text)
 
         if len(text) > self.valves.MAX_USER_CHARS:
-            text = text[: self.valves.MAX_USER_CHARS].rstrip() + "\n\n[truncated]"
+            text = self._truncate_at_boundary(text, self.valves.MAX_USER_CHARS)
 
         if self.valves.NEUTRALIZE_ROLE_MARKERS:
             text = self._neutralize_role_markers(text)
 
         return text
+
+    # structured block response to avoid upstream crashes from exceptions
+    def _blocked_response(self, body: dict, cleaned_messages: list) -> dict:
+        blocked_body = dict(body)
+        blocked_body["messages"] = cleaned_messages
+        blocked_body["error"] = {
+            "type": "guardrail_block",
+            "code": "prompt_injection_detected",
+            "message": (
+                "Request blocked by guardrail filter: prompt appears to contain "
+                "instruction-override text."
+            ),
+        }
+        return blocked_body
 
     async def inlet(
         self,
@@ -193,11 +226,10 @@ class Filter:
                     }
                 )
 
+            # return a structured error payload instead of raising
             if self.valves.BLOCK_SUSPICIOUS_PROMPTS:
-                raise ValueError(
-                    "Request blocked by guardrail filter: prompt appears to contain instruction-override text."
-                )
-
+                return self._blocked_response(body, cleaned_messages)
+                
         body = dict(body)
         body["messages"] = cleaned_messages
         return body
