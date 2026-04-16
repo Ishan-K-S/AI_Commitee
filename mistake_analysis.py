@@ -10,7 +10,7 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
 
-    # [ADDED] Detect whether the recent assistant message looks like the router's MCQ format.
+    # Detect whether the recent assistant message looks like the router's MCQ format.
     def _looks_like_router_mcq(self, messages: List[Dict]) -> bool:
         for m in reversed(messages[:-1]):
             if m.get("role") != "assistant":
@@ -31,7 +31,7 @@ class Filter:
 
         return False
 
-    # [ADDED] Detect very short answer attempts that the original pipe may not classify as "thinking".
+    # Detect very short answer attempts that the original pipe may not classify as "thinking".
     def _looks_like_answer_attempt(self, text: str) -> bool:
         text = (text or "").strip()
         if not text:
@@ -53,7 +53,7 @@ class Filter:
 
         return False
 
-    # [ADDED] Rewrite the message so the unchanged pipe routes it into the existing "thinking" path.
+    # Rewrite the message so the unchanged pipe routes it into the existing "thinking" path.
     def _rewrite_for_mistake_analysis(self, text: str) -> str:
         cleaned = (text or "").strip()
         letter_match = re.search(r"([ABCD])", cleaned, re.IGNORECASE)
@@ -72,7 +72,7 @@ class Filter:
             + cleaned
         )
 
-    # [ADDED] Minimal inlet-only filter so the original pipe code can remain unchanged.
+    # Minimal inlet-only filter so the original pipe code can remain unchanged.
     def inlet(self, body: dict) -> dict:
         if not self.valves.ENABLED:
             return body
