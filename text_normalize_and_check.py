@@ -113,6 +113,10 @@ class Filter:
             "I'm here to help you with math! I don't think my response was quite on track. "
             "Would you like a new practice problem, or is there a math concept I can explain?"
         )
+        self._fallback_suspicious_prompt = (
+            "I can't help with requests to override instructions or safety rules. "
+            "I can help with math problems, explanations, or practice questions."
+        )
 
     async def _llm_classify(
         self,
@@ -300,7 +304,10 @@ Reply with ONLY one word: yes or no"""
         if len(text) > self.valves.MAX_USER_CHARS:
             truncated = text[: self.valves.MAX_USER_CHARS]
             # If we're mid-word, extend to the next space to finish it cleanly
-            if text[self.valves.MAX_USER_CHARS] not in (" ", "\n"):
+            if (
+                self.valves.MAX_USER_CHARS < len(text)
+                and text[self.valves.MAX_USER_CHARS] not in (" ", "\n")
+            ):
                 next_boundary = text.find(" ", self.valves.MAX_USER_CHARS)
                 if next_boundary != -1:
                     truncated = text[:next_boundary]
@@ -413,9 +420,27 @@ Reply with ONLY one word: yes or no"""
 
         fallback = None
 
+        if (
+            self.valves.BLOCK_SUSPICIOUS_PROMPTS
+            and last_user_text
+            and self._is_suspicious(last_user_text)
+        ):
+            fallback = self._fallback_suspicious_prompt
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": "Response filtered: suspicious instruction-override prompt detected.",
+                            "done": True,
+                            "hidden": False,
+                        },
+                    }
+                )
+
         # Check in order of severity: harmful first, then leakage, then off-topic
         # Each check runs regex first — LLM classifier only fires if regex flags it
-        if self.valves.CHECK_RESPONSE_HARMFUL and await self._check_harmful(
+        if not fallback and self.valves.CHECK_RESPONSE_HARMFUL and await self._check_harmful(
             response_text, __event_emitter__
         ):
             fallback = self._fallback_harmful
