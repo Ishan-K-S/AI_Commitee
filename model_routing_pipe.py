@@ -1,88 +1,134 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Iterator
+from typing import Iterator, List, Dict
 import requests
 import json
+import time
 
 
 class Pipe:
     class Valves(BaseModel):
-        GROQ_API_KEY: str = Field(
-            default="", description="Your Groq API key (REQUIRED)"
-        )
+        GROQ_API_KEY: str = Field(default="", description="Your Groq API key (REQUIRED)")
         GROQ_BASE_URL: str = Field(default="https://api.groq.com/openai/v1")
 
-        QUESTION_MODEL: str = Field(
-            default="meta-llama/llama-4-scout-17b-16e-instruct",
-            description="Model used to generate practice problems",
-        )
+        # Models
+        QUESTION_MODEL: str = Field(default="llama-3.1-8b-instant")
+        THINKING_MODEL: str = Field(default="llama-3.1-70b-versatile")
+        JUDGE_MODEL: str = Field(default="llama-3.1-8b-instant")
+        DEFAULT_MODEL: str = Field(default="llama-3.1-8b-instant")
 
-        THINKING_MODEL: str = Field(
-            default="openai/gpt-oss-120b",
-            description="Model used for reasoning and explanations",
-        )
-
-        JUDGE_MODEL: str = Field(
-            default="llama-3.3-70b-versatile",
-            description="Model used to classify user intent",
-        )
-
-        DEFAULT_MODEL: str = Field(
-            default="llama-3.1-8b-instant",
-            description="Model used for casual conversation",
-        )
+        TIMEOUT: int = 30
+        MAX_RETRIES: int = 3
 
     def __init__(self):
         self.id = "math_mcq_router"
         self.name = "Math MCQ Router"
         self.valves = self.Valves()
 
-    def classify_intent(self, messages: list) -> str:
-        if not self.valves.GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY is not set")
+    def _post(self, payload: dict, stream: bool = False):
+        url = f"{self.valves.GROQ_BASE_URL}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.valves.GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
 
-        recent = messages[-4:]
-        formatted = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in recent])
+        last_error = None
 
-        judge_prompt = f"""You are an intent classifier.
+        for attempt in range(self.valves.MAX_RETRIES):
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    stream=stream,
+                    timeout=(5, self.valves.TIMEOUT),
+                )
 
-Here is the recent conversation:
-{formatted}
+                if response.status_code == 200:
+                    return response
 
-Classify the LAST user message into exactly one category:
-- "mcq" → the user wants a new practice problem or question
-- "thinking" → the user is answering a question, checking their answer, or asking for an explanation or solution
-- "default" → anything else, including greetings, acknowledgements, casual conversation, or anything ambiguous (e.g. "hello", "ok", "I understand", "thanks", "continue")
+                if response.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(2 ** attempt)
+                    continue
 
-When in doubt, classify as "default".
-Reply with ONLY one word: mcq, thinking, or default"""
+                raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
 
-        response = requests.post(
-            f"{self.valves.GROQ_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.valves.GROQ_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.valves.JUDGE_MODEL,
-                "messages": [{"role": "user", "content": judge_prompt}],
-                "max_tokens": 5,
-                "temperature": 0,
-            },
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if attempt == self.valves.MAX_RETRIES - 1:
+                    raise
+                time.sleep(2 ** attempt)
+
+        raise Exception(f"Max retries exceeded: {last_error}")
+
+    def classify_intent(self, messages: List[Dict]) -> str:
+        last_msg = messages[-1]["content"].lower()
+
+        # Fast heuristic
+        if any(k in last_msg for k in ["mcq", "multiple choice", "quiz"]):
+            return "mcq"
+        if any(k in last_msg for k in ["answer is", "i think", "my answer"]):
+            return "thinking"
+
+        recent = messages[-6:]
+        formatted = "\n".join(
+            [f"{m.get('role','').upper()}: {m.get('content','')}" for m in recent]
         )
 
-        if response.status_code != 200:
-            raise Exception(
-                f"Classification failed (HTTP {response.status_code}): {response.text}"
+        prompt = f"""You are an intent classifier.
+
+{formatted}
+
+Classify the LAST user message:
+
+- mcq → user wants a multiple choice question
+- thinking → user is solving or checking an answer
+- default → anything else
+
+Reply with ONLY one word: mcq, thinking, or default."""
+
+        try:
+            response = self._post(
+                {
+                    "model": self.valves.JUDGE_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 5,
+                    "temperature": 0,
+                }
             )
 
-        result = response.json()["choices"][0]["message"]["content"].strip().lower()
+            data = response.json()
+            content = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+                .lower()
+            )
 
-        if "mcq" in result:
-            return "mcq"
-        elif "thinking" in result:
-            return "thinking"
-        else:
-            return "default"
+            content = content.replace(".", "").split()[0]
+
+            if content in ["mcq", "thinking", "default"]:
+                return content
+
+        except Exception:
+            pass
+
+        return "default"
+
+    def _trim_messages(self, messages: List[Dict], max_msgs: int = 8):
+        return messages[-max_msgs:]
+
+    def _extract_content(self, choice: dict) -> str:
+        if not choice:
+            return ""
+
+        if "delta" in choice and isinstance(choice["delta"], dict):
+            return choice["delta"].get("content", "")
+
+        if "message" in choice and isinstance(choice["message"], dict):
+            return choice["message"].get("content", "")
+
+        return ""
 
     def pipe(self, body: dict) -> Iterator[str]:
         messages = body.get("messages", [])
@@ -91,119 +137,115 @@ Reply with ONLY one word: mcq, thinking, or default"""
             yield "No messages received."
             return
 
-        if not self.valves.GROQ_API_KEY:
-            yield "ERROR: GROQ_API_KEY is not configured. Please set your API key in valves."
+        if not self.valves.GROQ_API_KEY.strip():
+            yield "ERROR: GROQ_API_KEY is not configured."
             return
 
-        user_messages = [m for m in messages if m["role"] != "system"]
-        user_messages = [m for m in user_messages if m.get("content", "").strip()]
+        # Clean messages
+        user_messages = []
+        for m in messages:
+            content = m.get("content") or ""
+            if content.strip():
+                user_messages.append({
+                    "role": m.get("role", ""),
+                    "content": content,
+                })
 
         if not user_messages:
-            yield "ERROR: No valid user messages found."
+            yield "ERROR: No valid messages."
             return
 
+        # Intent detection
         try:
             intent = self.classify_intent(user_messages)
         except Exception as e:
-            yield f"[Router error during classification: {str(e)}]"
+            yield f"[Classification error: {str(e)}]"
             return
 
+        # Routing
         if intent == "mcq":
             model = self.valves.QUESTION_MODEL
-            system_prompt = """You are a math question generator. Generate exactly ONE multiple choice question.
+            system_prompt = """Generate ONE math MCQ.
 
-Use this exact format:
+Format:
 
-**Question:** [Clear math question here]
+**Question:** ...
 
-A) [option]
-B) [option]
-C) [option]
-D) [option]
+A) ...
+B) ...
+C) ...
+D) ...
 
-Rules:
-- Cover algebra, arithmetic, geometry, fractions, or word problems
-- Exactly one answer must be correct
-- Do NOT reveal the answer
-- End with: "Take your time and choose your answer!"
+- One correct answer
+- Do NOT reveal answer
+- End with: Take your time and choose your answer!
 """
-            payload_messages = [{"role": "system", "content": system_prompt}]
-            payload_messages.extend(user_messages)
-
         elif intent == "thinking":
             model = self.valves.THINKING_MODEL
-            system_prompt = """You are a math tutor helping with multiple choice questions.
+            system_prompt = """You are a math tutor.
 
-Your role:
-- If student gave an answer (A/B/C/D), tell them if correct, then explain
-- If they asked for the answer, reveal it and explain why
-- If they asked for explanation, show all working clearly
-- Be encouraging and patient
-- At the end, ask them if they understand after your response.
+- If user gave A/B/C/D → check + explain
+- If asked for answer → reveal + explain
+- Be clear and encouraging
+- End by asking if they understand
 """
-            payload_messages = [{"role": "system", "content": system_prompt}]
-            payload_messages.extend(user_messages)
-
-        else:  # "default"
+        else:
             model = self.valves.DEFAULT_MODEL
-            system_prompt = """First, determine which of the following situations applies to the user's message:
+            system_prompt = """Handle casual or unclear messages.
 
-1. If the message is casual conversation or an acknowledgement (e.g. "ok", "thanks", "I understand"):
-   - Respond naturally and briefly
-   - End by asking if they want a new problem or have any math questions
+- Casual → respond + ask if they want a problem
+- Off-topic → redirect to math
+- Unclear → ask for clarification
+"""
 
-2. If the message is off-topic and unrelated to math or studying:
-   - Politely let them know you can only help with math
-   - Redirect them toward requesting a practice problem or asking a math question
-
-3. If the message is unclear or ambiguous and you genuinely cannot determine what the user means:
-   - Ask for clarification
-   - Do NOT also ask if they want a new problem at the end
-
-Always be friendly and encouraging."""
-            payload_messages = [{"role": "system", "content": system_prompt}]
-            payload_messages.extend(user_messages[-6:])
+        payload_messages = [{"role": "system", "content": system_prompt}]
+        payload_messages.extend(self._trim_messages(user_messages))
 
         try:
-            response = requests.post(
-                f"{self.valves.GROQ_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.valves.GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
+            response = self._post(
+                {
                     "model": model,
                     "messages": payload_messages,
                     "stream": True,
-                    "temperature": 1,
+                    "temperature": 0.7,
                     "max_tokens": 1024,
                 },
                 stream=True,
             )
 
-            if response.status_code != 200:
-                yield f"[API Error HTTP {response.status_code}]: {response.text[:300]}"
-                return
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
 
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode("utf-8")
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except Exception:
+                    continue
 
-                    if line.startswith("data: "):
-                        data = line[6:]
+                # Flexible parsing
+                if "data:" not in line:
+                    continue
 
-                        if data.strip() == "[DONE]":
-                            break
+                data = line.split("data:", 1)[-1].strip()
 
-                        try:
-                            chunk = json.loads(data)
-                            choices = chunk.get("choices", [])
-                            if choices and len(choices) > 0:
-                                delta = choices[0].get("delta", {}).get("content", "")
-                                if delta:
-                                    yield delta
-                        except json.JSONDecodeError:
-                            continue
+                if data == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+
+                # Safe choices handling
+                choices = chunk.get("choices")
+                if not choices or not isinstance(choices, list):
+                    continue
+
+                choice = choices[0]
+                content = self._extract_content(choice)
+
+                if content:
+                    yield content
 
         except Exception as e:
-            yield f"[Router error calling model: {str(e)}]"
+            yield f"[Streaming error: {str(e)}]"
