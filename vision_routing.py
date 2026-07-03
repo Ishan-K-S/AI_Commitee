@@ -448,18 +448,26 @@ Rules:
                 # Process in batch (fills cache)
                 await self._perform_ocr_batch(image_urls, __event_emitter__)
 
-                # Reconstruct content, replacing image parts with OCR/cached blocks
-                new_parts = []
-                image_counter = 1
+                # Reconstruct content, replacing image parts with OCR/cached blocks,
+                # then collapse back into a single plain string. Many downstream
+                # consumers (title/tag generation, RAG, non-vision models, etc.)
+                # assume message["content"] is a str and call .split()/.strip()
+                # on it directly -- leaving it as a list of dicts here is what
+                # produces "list object has no attribute 'split'" once the
+                # images have been swapped out for text.
+                text_parts = []
                 for part in msg["content"]:
                     if part.get("type") == "image_url":
                         url = part["image_url"]["url"]
                         transcription = self._ocr_cache.get(url, "[OCR unavailable]")
-                        new_parts.append({"type": "text", "text": transcription})
-                        image_counter += 1
-                    else:
-                        new_parts.append(part)
-                messages[idx]["content"] = new_parts
+                        text_parts.append(transcription)
+                    elif part.get("type") == "text":
+                        t = part.get("text", "")
+                        if t:
+                            text_parts.append(t)
+                    # any other part types are dropped; extend here if needed
+
+                messages[idx]["content"] = "\n\n".join(text_parts)
 
         body["messages"] = messages
         return body
