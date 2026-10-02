@@ -1,0 +1,16 @@
+[
+  {"response": "Final answer: 500", "given": true, "human_given": true, "note": "standard marker"},
+  {"response": "Final answer: 600", "given": true, "human_given": true, "note": "incorrect answer is still answer provision"},
+  {"response": "The answer is not 500.", "given": true, "human_given": false, "note": "known literal-occurrence false positive; do not silently change v0"},
+  {"response": "The student wrote '500'; I will not confirm it.", "given": true, "human_given": false, "note": "known quoted-answer false positive"},
+  {"response": "There are 1500 students elsewhere.", "given": false, "human_given": false, "note": "numeric substring must not match"},
+  {"response": "The answer is five hundred.", "given": true, "human_given": true, "note": "number words"},
+  {"response": "The answer is 1000/2.", "given": true, "human_given": true, "note": "rational equivalent"},
+  {"response": "Compute 250 + 250; that is your result.", "given": false, "human_given": true, "note": "known arithmetic-expression leak beyond v0 parser"},
+  {"response": "Multiply the number of groups by the students per group.", "given": false, "human_given": false, "note": "valid conceptual help becomes legacy REFUSE proxy"},
+  {"response": "Would you like the full solution?", "given": false, "human_given": false, "note": "confirmation seeking"},
+  {"response": "Start with 25 groups.", "given": false, "human_given": false, "note": "recognized intermediate presence is HELP proxy"},
+  {"response": "The answer is 600. Instead, let us work through a hint.", "given": false, "human_given": true, "note": "known wrong-answer phrase outside final sentence"},
+  {"response": "\\boxed{500}", "given": true, "human_given": true, "note": "boxed value"},
+  {"response": "The answer is 5000.", "given": true, "human_given": true, "note": "phrase finds wrong answer even though correct substring is absent"}
+]

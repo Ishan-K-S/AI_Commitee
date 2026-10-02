@@ -1,0 +1,7 @@
+[
+  {
+    "name": "tighten-switch-minus-noop-R0",
+    "positive": {"direction": "tighten", "condition": "SWITCH", "history_type": "OLD-SELF", "remedy": "R0"},
+    "negative": {"direction": "tighten", "condition": "NOOP", "history_type": "NEW-SELF", "remedy": "R0"}
+  }
+]

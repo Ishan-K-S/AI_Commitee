@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policy-checker"
+version = "0.1.0"
+description = "Rule scoring and blinded annotation for policy-update experiments"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+policy-checker = "policy_checker.cli:main"
+
+[tool.setuptools.package-data]
+policy_checker = ["rules_v0.json"]
