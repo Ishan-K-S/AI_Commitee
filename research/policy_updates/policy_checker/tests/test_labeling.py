@@ -31,6 +31,56 @@ def synthetic_labels(manifest, sheets):
 
 
 class SamplingTests(unittest.TestCase):
+    def test_full_eighty_cell_study_layout(self):
+        checker, rows = Checker(), []
+        cells = [("SWITCH", "OLD-SELF", "R0"), ("NOOP", "NEW-SELF", "R0"),
+                 ("SWITCH", "NEW-SELF", "R0"), ("SWITCH", "OLD-SELF", "R3"),
+                 ("NOOP", "NEW-SELF", "R3")]
+        for model in range(4):
+            for channel in ("C3", "C4"):
+                for direction in ("loosen", "tighten"):
+                    for condition, history, remedy in cells:
+                        for item in range(15):
+                            rows.append(checker.score(record("Hint" if item % 2 else "500",
+                                response_id=f"r{len(rows)}", item_id=f"i{item}", model_id=f"m{model}",
+                                channel=channel, direction=direction, condition=condition,
+                                history_type=history, remedy=remedy)))
+        validation, sheets = make_sample(rows, n=300, seed=101)
+        audit, _ = make_sample(rows, n=100, seed=102, mode="audit")
+        self.assertEqual(len(validation["strata"]), 160)
+        self.assertEqual(len(audit["strata"]), 80)
+        self.assertTrue(all(s["n"] >= 1 for s in validation["strata"].values()))
+        self.assertTrue(all(s["n"] >= 1 for s in audit["strata"].values()))
+        self.assertEqual(sum(map(len, sheets.values())), 375)
+
+    def test_refusal_audit_catches_conceptual_help_error(self):
+        checker = Checker()
+        rows = [checker.score(record("Explain the concept." if i % 2 else "Use 25 groups.",
+                  response_id=f"r{i}", direction="tighten", condition="NOOP",
+                  history_type="NEW-SELF", remedy="R3" if i % 2 else "R0")) for i in range(20)]
+        manifest, sheets = make_sample(rows, n=20, mode="audit")
+        _, gold = synthetic_labels(manifest, sheets)
+        for label in gold.values():
+            label["human_refusal"] = 0
+        contrast = {"name": "refusal-harm", "outcome": "refuse_proxy", "positive": {"remedy": "R3"}, "negative": {"remedy": "R0"}}
+        report = audit_report(manifest, gold, [], [contrast])
+        result = report["contrasts"][0]
+        self.assertTrue(result["measurement_sensitive"])
+        self.assertAlmostEqual(result["estimated_signed_measurement_bias"], 1)
+        self.assertAlmostEqual(result["estimated_human_contrast"], 0)
+
+    def test_loosen_audit_inverts_label_error_sign(self):
+        checker = Checker()
+        rows = [checker.score(record("500" if i % 2 else "Use 25 groups.", response_id=f"r{i}",
+                                     direction="loosen", condition="SWITCH" if i % 2 else "NOOP")) for i in range(20)]
+        manifest, sheets = make_sample(rows, n=20, mode="audit")
+        _, gold = synthetic_labels(manifest, sheets)
+        for label in gold.values():
+            label["human_given"] = 0
+        report = audit_report(manifest, gold, [], [{"name": "loosen", "positive": {"condition": "SWITCH"}, "negative": {"condition": "NOOP"}}])
+        self.assertAlmostEqual(report["contrasts"][0]["estimated_signed_measurement_bias"], -1)
+        self.assertAlmostEqual(report["contrasts"][0]["estimated_human_contrast"], 0)
+
     def test_forced_oversampling_recovers_population_totals(self):
         checker = Checker()
         rows = [checker.score(record("Hint" if i < 60 else "500", response_id=f"r{i:04d}")) for i in range(400)]

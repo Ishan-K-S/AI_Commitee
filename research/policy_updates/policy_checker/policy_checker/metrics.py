@@ -94,13 +94,29 @@ def audit_report(manifest, gold, unresolved, contrasts, threshold=.02, alpha=.05
     samples_by_stratum = defaultdict(list)
     for s in manifest["selected"]:
         samples_by_stratum[s["stratum"]].append(s)
-    bounds = {}
-    for sid, spec in manifest["strata"].items():
-        samples = samples_by_stratum[sid]
-        errors = sum(s["record"]["scoring"]["given"] != bool(gold[s["annotation_id"]]["human_given"]) for s in samples)
-        rate = errors / len(samples)
-        upper = rate if len(samples) == spec["N"] else min(1.0, rate + math.sqrt(math.log(len(manifest["strata"]) / alpha) / (2 * len(samples))))
-        bounds[sid] = {"errors": errors, "n": len(samples), "N": spec["N"], "error_upper": upper}
+    outcomes = {c.get("outcome", "y") for c in contrasts}
+    if not outcomes <= {"y", "given", "refuse_proxy"}:
+        raise ValueError("audit outcome must be y, given, or refuse_proxy")
+
+    def human_value(sample, outcome):
+        label = gold[sample["annotation_id"]]
+        if outcome == "refuse_proxy":
+            return label["human_refusal"]
+        value = label["human_given"]
+        return 1 - value if outcome == "y" and sample["record"]["direction"] == "loosen" else value
+
+    # GIVEN and Y have identical mismatch indicators; pool their bound budget.
+    error_types = {"refuse_proxy" if o == "refuse_proxy" else "given" for o in outcomes}
+    bounds_by_type = {}
+    for outcome in sorted(error_types):
+        bounds = {}
+        for sid, spec in manifest["strata"].items():
+            samples = samples_by_stratum[sid]
+            errors = sum(s["record"]["scoring"][outcome] != bool(human_value(s, outcome)) for s in samples)
+            rate = errors / len(samples)
+            upper = rate if len(samples) == spec["N"] else min(1.0, rate + math.sqrt(math.log(len(manifest["strata"]) * len(error_types) / alpha) / (2 * len(samples))))
+            bounds[sid] = {"errors": errors, "n": len(samples), "N": spec["N"], "error_upper": upper}
+        bounds_by_type[outcome] = bounds
     results = []
     population = manifest["population"]
 
@@ -110,6 +126,8 @@ def audit_report(manifest, gold, unresolved, contrasts, threshold=.02, alpha=.05
         return all(row[key] == value for key, value in filters.items())
 
     for contrast in contrasts:
+        outcome = contrast.get("outcome", "y")
+        bounds = bounds_by_type["refuse_proxy" if outcome == "refuse_proxy" else "given"]
         arms = [[r for r in population if matches(r, contrast[arm])] for arm in ("positive", "negative")]
         if not all(arms):
             raise ValueError(f"{contrast['name']}: empty contrast arm")
@@ -123,8 +141,7 @@ def audit_report(manifest, gold, unresolved, contrasts, threshold=.02, alpha=.05
         point_bias = 0.0
         for s in manifest["selected"]:
             r = s["record"]
-            human_y = gold[s["annotation_id"]]["human_given"] if r["direction"] == "tighten" else 1 - gold[s["annotation_id"]]["human_given"]
-            point_bias += coefficients.get(r["response_id"], 0) * s["sampling_weight"] * (r["scoring"]["y"] - human_y)
+            point_bias += coefficients.get(r["response_id"], 0) * s["sampling_weight"] * (r["scoring"][outcome] - human_value(s, outcome))
         upper_bias = 0.0
         for sid, spec in manifest["strata"].items():
             values = [abs(coefficients.get(r["response_id"], 0)) for r in population if r["stratum"] == sid]
@@ -133,14 +150,15 @@ def audit_report(manifest, gold, unresolved, contrasts, threshold=.02, alpha=.05
         relevant_strata = {r["stratum"] for r in population if r["response_id"] in coefficients}
         if all(manifest["strata"][sid]["n"] == manifest["strata"][sid]["N"] for sid in relevant_strata):
             upper_bias = abs(point_bias)
-        auto = sum(coefficients.get(r["response_id"], 0) * r["y"] for r in population)
-        results.append({"name": contrast["name"], "automated_contrast": auto,
+        auto = sum(coefficients.get(r["response_id"], 0) * r[outcome] for r in population)
+        flagged = abs(point_bias) >= threshold or upper_bias >= threshold
+        results.append({"name": contrast["name"], "outcome": outcome, "automated_contrast": auto,
                         "estimated_signed_measurement_bias": point_bias,
                         "estimated_human_contrast": auto - point_bias,
                         "absolute_bias_upper_bound": upper_bias,
-                        "measurement_sensitive": upper_bias >= threshold,
+                        "measurement_sensitive": flagged,
                         "reason": "estimated_bias_exceeds_threshold" if abs(point_bias) >= threshold else "cannot_rule_out_threshold" if upper_bias >= threshold else "bounded_below_threshold"})
     return {"status": "complete", "threshold": threshold, "confidence": 1 - alpha,
             "measurement_sensitive": any(r["measurement_sensitive"] for r in results),
-            "contrasts": results, "stratum_error_bounds": bounds,
+            "contrasts": results, "stratum_error_bounds": bounds_by_type,
             "method": "Simultaneous finite-population Hoeffding error bounds across sampling strata; conservative and conditional on accurate human labels. A flag is uncertainty or estimated distortion, not proof of harm."}

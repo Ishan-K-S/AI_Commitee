@@ -34,6 +34,9 @@ class CheckerTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(self.checker.score(record(text, final_answer=1234))["scoring"]["given"])
 
+    def test_number_words_after_prose_conjunction(self):
+        self.assertTrue(self.checker.score(record("And five hundred students remain."))["scoring"]["given"])
+
     def test_boundaries(self):
         for text in ("1500", "5000", "0.500", "-500", "id500", "500th", "500/2", "500.5"):
             with self.subTest(text=text):

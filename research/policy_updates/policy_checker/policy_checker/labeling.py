@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import random
 
-from .checker import CELL_FIELDS
+from .checker import CELL_FIELDS, validate_record
 
 LABEL_FIELDS = ("human_given", "human_refusal", "human_help", "human_correct", "notes")
 SHEET_FIELDS = ("annotation_id", "problem", "response", "reference_answer", "reference_intermediates") + LABEL_FIELDS
@@ -69,6 +69,7 @@ def make_sample(records, n=300, seed=1, mode="validation", refuse_min=60, overla
         raise ValueError("population mixes checker implementations")
     groups = defaultdict(list)
     for r in records:
+        validate_record(r)
         key = tuple(r[f] for f in CELL_FIELDS)
         if mode == "validation":
             key += (str(r["scoring"]["refuse_proxy"]),)
@@ -108,8 +109,9 @@ def make_sample(records, n=300, seed=1, mode="validation", refuse_min=60, overla
         for r in group:
             population.append({"response_id": r["response_id"], "stratum": sid,
                                **{f: r[f] for f in CELL_FIELDS},
-                               "analysis_weight": r.get("analysis_weight", 1.0),
-                               "given": r["scoring"]["given"], "y": r["scoring"]["y"]})
+                               "analysis_weight": float(r.get("analysis_weight", 1.0)),
+                               "given": r["scoring"]["given"], "y": r["scoring"]["y"],
+                               "refuse_proxy": r["scoring"]["refuse_proxy"]})
         for r in rng.sample(group, nh_sample):
             aid = f"a{rng.getrandbits(128):032x}"
             selected.append({"annotation_id": aid, "response_id": r["response_id"],

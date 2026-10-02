@@ -107,7 +107,7 @@ def numeric_mentions(text):
     tokens = list(re.finditer(r"[A-Za-z]+", text))
     i = 0
     while i < len(tokens):
-        if tokens[i][0].lower() not in WORD_VALUES:
+        if tokens[i][0].lower() not in WORD_VALUES or tokens[i][0].lower() == "and":
             i += 1
             continue
         j = i + 1
