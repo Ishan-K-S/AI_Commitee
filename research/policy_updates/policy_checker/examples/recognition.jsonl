@@ -1,2 +1,0 @@
-{"response_id":"recognition-1","response":"B","options":{"A":false,"B":true},"question_negated":false,"expected_allowed":true}
-{"response_id":"recognition-2","response":"A","options":{"A":true,"B":false},"question_negated":true,"expected_allowed":false}
